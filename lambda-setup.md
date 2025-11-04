@@ -134,7 +134,7 @@ After Lambda functions are created (either by GitHub Actions or manually), you n
 ```bash
 # Grant permission for resize-lambda
 aws lambda add-permission \
-  --function-name <FUNCTION NAME> \
+  --function-name resize-lambda \
   --statement-id sns-invoke \
   --action lambda:InvokeFunction \
   --principal sns.amazonaws.com \
