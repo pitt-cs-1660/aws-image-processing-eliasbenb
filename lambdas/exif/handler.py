@@ -1,25 +1,30 @@
-import json
-from PIL import Image
 import io
-import boto3
+import json
 from pathlib import Path
+from urllib.parse import unquote_plus
+
+import boto3
+from PIL import Image
+
 
 def download_from_s3(bucket, key):
-    s3 = boto3.client('s3')
+    s3 = boto3.client("s3")
     buffer = io.BytesIO()
     s3.download_fileobj(bucket, key, buffer)
     buffer.seek(0)
     return Image.open(buffer)
 
-def upload_to_s3(bucket, key, data, content_type='image/jpeg'):
-    s3 = boto3.client('s3')
+
+def upload_to_s3(bucket, key, data, content_type="image/jpeg"):
+    s3 = boto3.client("s3")
     if isinstance(data, Image.Image):
         buffer = io.BytesIO()
-        data.save(buffer, format='JPEG')
+        data.save(buffer, format="JPEG")
         buffer.seek(0)
         s3.upload_fileobj(buffer, bucket, key)
     else:
         s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+
 
 def exif_handler(event, context):
     """
@@ -32,25 +37,55 @@ def exif_handler(event, context):
     failed_count = 0
 
     # iterate over all SNS records
-    for sns_record in event.get('Records', []):
+    for sns_record in event.get("Records", []):
         try:
             # extract and parse SNS message
-            sns_message = json.loads(sns_record['Sns']['Message'])
+            sns_message: dict[str, list[dict]] = json.loads(
+                sns_record["Sns"]["Message"]
+            )
 
             # iterate over all S3 records in the SNS message
-            for s3_event in sns_message.get('Records', []):
+            for s3_event in sns_message.get("Records", []):
                 try:
-                    s3_record = s3_event['s3']
-                    bucket_name = s3_record['bucket']['name']
-                    object_key = s3_record['object']['key']
+                    s3_record = s3_event["s3"]
+                    bucket_name = s3_record["bucket"]["name"]
+                    object_key = unquote_plus(s3_record["object"]["key"])
 
                     print(f"Processing: s3://{bucket_name}/{object_key}")
 
-                    ######
-                    #
-                    #  TODO: add exif lambda code here
-                    #
-                    ######
+                    image = download_from_s3(bucket_name, object_key)
+                    try:
+                        exif_data = {
+                            "width": image.width,
+                            "height": image.height,
+                            "format": image.format,
+                            "mode": image.mode,
+                        }
+
+                        if hasattr(image, "getexif"):
+                            exif = image.getexif()
+                            if exif:
+                                for tag_id, value in exif.items():
+                                    try:
+                                        exif_data[str(tag_id)] = str(value)
+                                    except Exception as ex:
+                                        print(
+                                            f"Failed to serialize EXIF tag {tag_id}: {ex}"
+                                        )
+
+                        print(f"Extracted EXIF data: {json.dumps(exif_data, indent=2)}")
+
+                        filename = Path(object_key).stem
+                        output_key = f"processed/exif/{filename}.json"
+                        upload_to_s3(
+                            bucket_name,
+                            output_key,
+                            json.dumps(exif_data, indent=2),
+                            "application/json",
+                        )
+                        print(f"Uploaded EXIF metadata to: {output_key}")
+                    finally:
+                        image.close()
 
                     processed_count += 1
 
@@ -64,9 +99,9 @@ def exif_handler(event, context):
             failed_count += 1
 
     summary = {
-        'statusCode': 200 if failed_count == 0 else 207,  # @note: 207 = multi-status
-        'processed': processed_count,
-        'failed': failed_count,
+        "statusCode": 200 if failed_count == 0 else 207,  # @note: 207 = multi-status
+        "processed": processed_count,
+        "failed": failed_count,
     }
 
     print(f"Processing complete: {processed_count} succeeded, {failed_count} failed")
